@@ -4,15 +4,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D 機器模型 線上展示</title>
-
-    <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js"></script>
-
+    <title>Three.js GLTF/GLB 模型展示</title>
     <style>
         * {
-            box-sizing: border-box;
             margin: 0;
             padding: 0;
+            box-sizing: border-box;
         }
 
         body,
@@ -24,11 +21,35 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         }
 
-        /* 滿版 3D 播放器容器 */
-        model-viewer {
+        /* 進度條樣式 */
+        #loading-screen {
+            position: absolute;
             width: 100%;
             height: 100%;
-            --poster-color: transparent;
+            background: #f4f6f9;
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            font-family: sans-serif;
+            transition: opacity 0.5s ease;
+        }
+
+        .progress-container {
+            width: 30%;
+            height: 6px;
+            background: rgba(0, 0, 0, 0.1);
+            border-radius: 3px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+
+        #progress-bar {
+            width: 0%;
+            height: 100%;
+            background: #007aff;
+            transition: width 0.1s ease;
         }
 
         /* 頂部標題與說明 */
@@ -57,68 +78,190 @@
             color: #86868b;
             line-height: 1.4;
         }
-
-        /* 自訂內建進度條（讀取 67MB 檔案時非常需要） */
-        .progress-bar {
-            display: block;
-            width: 33%;
-            height: 4px;
-            background: rgba(0, 0, 0, 0.1);
-            border-radius: 4px;
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            overflow: hidden;
-        }
-
-        .progress-bar.hide {
-            display: none;
-        }
-
-        .update-bar {
-            width: 0%;
-            height: 100%;
-            background: #007aff;
-            transition: width 0.3s;
-        }
     </style>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
 </head>
 
 <body>
 
     <div class="header-info">
         <h1>Ctrl CV 機器模型展示</h1>
-        <p>滑鼠拖曳可旋轉視角，滾輪可放大縮小模型。</p>
     </div>
 
-    <model-viewer src="model.glb" camera-controls touch-action="pan-y" tone-mapping="neutral" shadow-intensity="0.0"
-        power-preference="high-performance">
-
-        <div class="progress-bar" slot="progress-bar">
-            <div class="update-bar"></div>
+    <div id="loading-screen">
+        <div class="header-info">
+            <h1>Ctrl CV 機器模型展示</h1>
         </div>
+        <h2>模型載入中...</h2>
+        <div class="progress-container">
+            <div id="progress-bar"></div>
+        </div>
+    </div>
 
-    </model-viewer>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-    <script>
-        const modelViewer = document.querySelector('model-viewer');
-        const progressBar = document.querySelector('.progress-bar');
-        const updatingBar = document.querySelector('.update-bar');
+        let scene, camera, renderer, controls;
 
-        // 監聽 3D 模型的載入進度
-        modelViewer.addEventListener('progress', (event) => {
-            const progress = event.detail.totalProgress;
-            progressBar.classList.remove('hide');
+        init();
+        animate();
 
-            if (updatingBar) {
-                updatingBar.style.width = `${progress * 100}%`;
-            }
+        function init() {
+            // 1. 建立場景 (Scene)
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf4f6f9); // 設定與網頁背景一致的淺灰色
 
-            if (progress === 1) {
-                progressBar.classList.add('hide');
-            }
-        });
+            // 2. 建立相機 (Camera)
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 5, 10); // 初始化相機位置 (X, Y, Z)
+
+            // 3. 建立渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+
+            // 💡 調整：移除 Math.min，直接強制使用裝置的物理像素比（例如 Retina 螢幕的 2x 或 3x）
+            // renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+            // 💡 關鍵：開啟陰影對映
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap; // 使用軟陰影，邊緣更平滑
+
+            // 設定色彩對映，讓材質色彩更寫實
+            renderer.toneMapping = THREE.NeutralToneMapping;
+            renderer.toneMappingExposure = 1.0;
+
+            document.body.appendChild(renderer.domElement);
+
+            // 4. 建立控制器 (OrbitControls)
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = false;       // 💡 調整：直接關閉阻尼，滑鼠動到哪、模型就轉到哪，完全同步不拖延
+            controls.screenSpacePanning = true;
+
+            // 💡 限制縮放距離，防止使用者滾輪滾太遠找不到模型，或滾太近穿透模型
+            controls.minDistance = 2;            // 最近縮放距離
+            controls.maxDistance = 20;           // 最遠縮放距離
+
+            // 5. 設定燈光與陰影 (Lighting)
+            // A. 環境光 (Ambient Light)：提供基礎亮度，避免背光處全黑
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            // B. 主光源/方向光 (Directional Light)：負責產生強烈的光影與立體感
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+            dirLight.position.set(5, 10, 7); // 光源從右上方照下來
+            dirLight.castShadow = true;      // 💡 讓這盞燈產生陰影
+
+            // 優化陰影品質
+            dirLight.shadow.mapSize.width = 2048;  // 陰影貼圖解析度，越大越精細 (預設512)
+            dirLight.shadow.mapSize.height = 2048;
+            dirLight.shadow.camera.near = 0.5;
+            dirLight.shadow.camera.far = 25;
+            dirLight.shadow.camera.left = -6;
+            dirLight.shadow.camera.right = 6;
+            dirLight.shadow.camera.top = 6;
+            dirLight.shadow.camera.bottom = -6;
+            dirLight.shadow.bias = -0.0005; // 避免陰影出現奇怪的條紋鋸齒 (Shadow Acne)
+            scene.add(dirLight);
+
+            // 6. 建立虛擬地面（接收模型投射下來的陰影）
+            const floorGeo = new THREE.PlaneGeometry(50, 50);
+            const floorMat = new THREE.ShadowMaterial({ opacity: 0.2 }); // 只顯示陰影的透明材質，完美融合背景
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.rotation.x = -Math.PI / 2; // 將平面翻轉水平
+            floor.position.y = 0;
+            floor.receiveShadow = true; // 💡 允許接收陰影
+            scene.add(floor);
+
+            // 7. 載入 GLB 模型 (GLTFLoader)
+            const loader = new GLTFLoader();
+            const progressBar = document.getElementById('progress-bar');
+            const loadingScreen = document.getElementById('loading-screen');
+
+            // ⚠️ 請確保檔案名稱正確，且路徑大小寫一致
+            loader.load(
+                'model.glb',
+                function (gltf) {
+                    const model = gltf.scene;
+
+                    model.traverse(function (object) {
+                        if (object.isMesh) {
+                            object.castShadow = true;
+                            object.receiveShadow = true;
+                        }
+                    });
+
+                    // 💡 自動計算模型邊界與中心點
+                    const box = new THREE.Box3().setFromObject(model);
+                    const center = box.getCenter(new THREE.Vector3());
+                    const size = box.getSize(new THREE.Vector3());
+
+                    // 將模型底部重置到地面 (Y = 0)
+                    model.position.y = -box.min.y;
+                    scene.add(model);
+
+                    // 💡 關鍵修改：自動計算相機的最佳距離，避免一開始太遠
+                    const maxDim = Math.max(size.x, size.y, size.z);
+                    const fov = camera.fov * (Math.PI / 180);
+                    let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
+
+                    cameraZ *= 1.5; // 乘上一個舒適的視角比例（1.5倍模型大小）
+
+                    // 重新設定相機的初始位置與方向
+                    camera.position.set(center.x, center.y + (size.y / 2), cameraZ);
+                    camera.lookAt(center.x, center.y, center.z);
+
+                    // 讓控制器限制的最大最遠距離隨著模型大小動態調整
+                    controls.minDistance = maxDim * 0.5;
+                    controls.maxDistance = maxDim * 3;
+
+                    // 控制器聚焦在模型中心
+                    controls.target.copy(center.setY(center.y - box.min.y));
+                    controls.update(); // 強制更新控制器
+
+                    // 隱藏載入畫面
+                    loadingScreen.style.opacity = '0';
+                    setTimeout(() => loadingScreen.remove(), 500);
+                },
+                // 載入進度監聽
+                function (xhr) {
+                    if (xhr.total > 0) {
+                        const percentComplete = (xhr.loaded / xhr.total) * 100;
+                        progressBar.style.width = percentComplete + '%';
+                    }
+                },
+                // 錯誤處理
+                function (error) {
+                    console.error('模型載入失敗：', error);
+                }
+            );
+
+            // 監聽視窗縮放
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // 8. 動態渲染循環 (Animation Loop)
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update(); // 每次畫面更新都更新控制器
+            renderer.render(scene, camera);
+        }
     </script>
 </body>
 
